@@ -60,6 +60,13 @@ return [
             'report' => false,
         ],
 
+        'memoires' => [
+            'driver' => 'local',
+            'root' => storage_path('app/private/memoires'),
+            'visibility' => 'private',
+            'throw' => false,
+        ],
+
     ],
 
     /*
