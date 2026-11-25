@@ -11,6 +11,7 @@ use App\Http\Controllers\HistoriqueController;
 use App\Http\Controllers\MemoireController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ValidationController;
+use App\Http\Controllers\Admin;
 use Illuminate\Support\Facades\Route;
 
 // Public
