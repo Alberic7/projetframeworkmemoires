@@ -2,29 +2,29 @@
 
 namespace App\Policies;
 
-use App\Enums\Role;
 use App\Enums\StatutMemoire;
 use App\Models\Memoire;
 use App\Models\User;
-use Illuminate\Support\Carbon;
+use Carbon\Carbon;
 
 class MemoirePolicy
 {
-    // Fiche du catalogue (visiteur autorisé)
+    /** Fiche du catalogue (visiteurs inclus) : mémoire validé, embargo levé ou absent. */
     public function voir(?User $user, Memoire $memoire): bool
     {
-        return $this->estPublie($memoire);
+        return $this->estPublic($memoire);
     }
 
-    // Lecture en ligne et flux PDF
+    /** Lecture en ligne et flux PDF. */
     public function lire(User $user, Memoire $memoire): bool
     {
-        // Le responsable doit pouvoir ouvrir le PDF pour vérifier un dépôt
-        if ($this->role($user) === Role::Responsable->value) {
+        if ($this->role($user) === 'responsable'
+            || $this->estAuteur($user, $memoire)
+            || $this->estInvite($user, $memoire)) {
             return true;
         }
 
-        if (! $this->estPublie($memoire)) {
+        if (! $this->estPublic($memoire)) {
             return false;
         }
 
@@ -32,38 +32,61 @@ class MemoirePolicy
             return true;
         }
 
-        // Accès restreint : l'auteur ou le chef de la filière concernée
-        return $memoire->etudiant_id == $user->id
-            || ($this->role($user) === Role::ChefDepartement->value
-                && $user->filiere_id == $memoire->filiere_id);
+        // Accès restreint : le responsable et l'auteur (ci-dessus) + le chef de la filière concernée.
+        return $this->role($user) === 'chef_departement'
+            && $user->filiere_id === $memoire->filiere_id;
     }
 
+    /** Téléchargement : refusé si telechargement_autorise est faux, et à l'invité avant sa réponse. */
     public function telecharger(User $user, Memoire $memoire): bool
     {
-        return $this->lire($user, $memoire) && (bool) $memoire->telechargement_autorise;
+        return (bool) $memoire->telechargement_autorise
+            && ! $this->estInvite($user, $memoire)
+            && $this->lire($user, $memoire);
     }
 
-    // Valider ou rejeter (même règle pour les deux)
+    /** Validation ou rejet : responsable, sur un mémoire soumis ou en vérification. */
     public function valider(User $user, Memoire $memoire): bool
     {
-        return $this->role($user) === Role::Responsable->value
-            && $this->statut($memoire) === StatutMemoire::EnVerification->value;
+        return $this->role($user) === 'responsable'
+            && in_array($this->statut($memoire), [
+                StatutMemoire::Soumis->value,
+                StatutMemoire::EnVerification->value,
+            ], true);
     }
 
-    private function estPublie(Memoire $memoire): bool
+    /** Auteur confirmé (déposant ou binôme ayant accepté). */
+    private function estAuteur(User $user, Memoire $memoire): bool
+    {
+        return $memoire->auteurs()
+            ->where('users.id', $user->id)
+            ->whereNotNull('memoire_auteurs.confirme_le')
+            ->exists();
+    }
+
+    /** Étudiant invité, invitation encore en attente. */
+    private function estInvite(User $user, Memoire $memoire): bool
+    {
+        return $this->statut($memoire) === StatutMemoire::EnAttenteBinome->value
+            && $memoire->auteurs()
+                ->where('users.id', $user->id)
+                ->whereNull('memoire_auteurs.confirme_le')
+                ->exists();
+    }
+
+    private function estPublic(Memoire $memoire): bool
     {
         return $this->statut($memoire) === StatutMemoire::Valide->value
-            && ($memoire->date_embargo === null
-                || Carbon::parse($memoire->date_embargo)->lte(now()));
-    }
-
-    private function role(User $user): string
-    {
-        return $user->role instanceof \BackedEnum ? $user->role->value : (string) $user->role;
+            && (! $memoire->date_embargo || Carbon::parse($memoire->date_embargo)->lte(today()));
     }
 
     private function statut(Memoire $memoire): string
     {
         return $memoire->statut instanceof \BackedEnum ? $memoire->statut->value : (string) $memoire->statut;
+    }
+
+    private function role(User $user): string
+    {
+        return $user->role instanceof \BackedEnum ? $user->role->value : (string) $user->role;
     }
 }

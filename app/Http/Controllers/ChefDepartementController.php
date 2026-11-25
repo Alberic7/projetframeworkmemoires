@@ -6,19 +6,23 @@ use App\Enums\StatutMemoire;
 use App\Models\Filiere;
 use App\Models\Memoire;
 use Illuminate\Http\Request;
+use Illuminate\View\View;
 
 class ChefDepartementController extends Controller
 {
-    public function index(Request $request)
+    /** Mémoires validés de la filière du chef de département. */
+    public function index(Request $request): View
     {
-        $filiere = Filiere::find($request->user()->filiere_id);
-        abort_unless($filiere, 403, "Aucune filière n'est rattachée à votre compte.");
+        abort_unless($request->user()->filiere_id, 403);
 
-        $memoires = Memoire::where('statut', StatutMemoire::Valide->value)
+        $filiere = Filiere::findOrFail($request->user()->filiere_id);
+
+        $memoires = Memoire::query()
+            ->where('statut', StatutMemoire::Valide->value)
             ->where('filiere_id', $filiere->id)
-            ->with(['etudiant', 'anneeAcademique'])
+            ->with(['auteurs', 'anneeAcademique'])
             ->latest()
-            ->get();
+            ->paginate(15);
 
         return view('chef.memoires', compact('memoires', 'filiere'));
     }

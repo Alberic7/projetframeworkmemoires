@@ -5,81 +5,68 @@ namespace App\Services;
 use App\Enums\StatutMemoire;
 use App\Models\Memoire;
 use Illuminate\Support\Collection;
-use Illuminate\Support\Str;
 
+/**
+ * Détection de plagiat simplifiée : similarité de Jaccard (en %)
+ * entre les mots (4 lettres et plus) du titre + résumé.
+ */
 class PlagiatService
 {
-    private const POIDS_TITRE = 0.4;
-    private const POIDS_RESUME = 0.6;
-    private const SEUIL = 10.0; // en dessous, la similarité n'est pas retenue
-
-    private const MOTS_VIDES = [
-        'les', 'des', 'une', 'aux', 'par', 'pour', 'sur', 'dans', 'avec', 'sans', 'est', 'sont',
-        'que', 'qui', 'dont', 'cette', 'ces', 'son', 'ses', 'leur', 'leurs', 'nous', 'vous',
-        'ils', 'elles', 'pas', 'plus', 'mais', 'donc', 'entre', 'vers', 'chez', 'comme',
-        'ainsi', 'afin', 'etre', 'avoir', 'fait', 'faire', 'ete', 'aussi', 'tout', 'tous',
-    ];
-
-    /**
-     * Compare le titre et le résumé du mémoire à ceux des autres mémoires
-     * et renvoie les plus proches : [['memoire' => Memoire, 'score' => float], ...]
-     * triés par score décroissant (score de 0 à 100).
-     */
-    public function analyser(Memoire $memoire, int $limite = 5): Collection
+    /** Score le plus élevé (0 à 100) face aux mémoires existants non rejetés. */
+    public function score(string $titre, string $resume, ?int $ignorerMemoireId = null): float
     {
-        $titre = $this->mots($memoire->titre);
-        $resume = $this->mots($memoire->resume);
+        return (float) ($this->comparer($titre, $resume, $ignorerMemoireId)->max('score') ?? 0);
+    }
 
-        $scores = [];
+    /** Mémoires proches, du plus au moins similaire : [['memoire' => Memoire, 'score' => float], ...] */
+    public function similaires(Memoire $memoire, int $limite = 5): Collection
+    {
+        $scores = $this->comparer((string) $memoire->titre, (string) $memoire->resume, $memoire->id)
+            ->filter(fn ($s) => $s['score'] > 0)
+            ->sortByDesc('score')
+            ->take($limite);
 
-        // Les mémoires rejetés sont ignorés : un étudiant qui redépose après un rejet
-        // serait sinon comparé à sa propre version précédente.
-        Memoire::where('id', '!=', $memoire->id)
-            ->where('statut', '!=', StatutMemoire::Rejete->value)
+        $memoires = Memoire::with('auteurs')
+            ->whereIn('id', $scores->pluck('id'))
+            ->get()
+            ->keyBy('id');
+
+        return $scores
+            ->map(fn ($s) => ['memoire' => $memoires[$s['id']], 'score' => $s['score']])
+            ->values();
+    }
+
+    private function comparer(string $titre, string $resume, ?int $ignorerMemoireId): Collection
+    {
+        $reference = $this->jetons($titre.' '.$resume);
+
+        return Memoire::query()
             ->select(['id', 'titre', 'resume'])
-            ->cursor()
-            ->each(function ($autre) use ($titre, $resume, &$scores) {
-                $score = 100 * (
-                    self::POIDS_TITRE * $this->jaccard($titre, $this->mots($autre->titre))
-                    + self::POIDS_RESUME * $this->jaccard($resume, $this->mots($autre->resume))
-                );
-
-                if ($score >= self::SEUIL) {
-                    $scores[$autre->id] = round($score, 1);
-                }
-            });
-
-        arsort($scores);
-        $scores = array_slice($scores, 0, $limite, true);
-
-        $memoires = Memoire::with('etudiant')->whereIn('id', array_keys($scores))->get()->keyBy('id');
-
-        return collect($scores)->map(fn ($score, $id) => [
-            'memoire' => $memoires[$id],
-            'score' => $score,
-        ])->values();
+            ->where('statut', '!=', StatutMemoire::Rejete->value)
+            ->when($ignorerMemoireId, fn ($q) => $q->where('id', '!=', $ignorerMemoireId))
+            ->get()
+            ->map(fn ($m) => [
+                'id' => $m->id,
+                'score' => $this->jaccard($reference, $this->jetons($m->titre.' '.$m->resume)),
+            ]);
     }
 
-    /** Ensemble des mots significatifs (clés du tableau), sans accents ni mots vides. */
-    private function mots(?string $texte): array
+    private function jetons(string $texte): array
     {
-        $mots = preg_split('/[^a-z0-9]+/', Str::lower(Str::ascii((string) $texte)), -1, PREG_SPLIT_NO_EMPTY);
+        $mots = preg_split('/[^\p{L}\p{N}]+/u', mb_strtolower($texte), -1, PREG_SPLIT_NO_EMPTY);
 
-        $mots = array_filter($mots, fn ($m) => strlen($m) > 2 && ! in_array($m, self::MOTS_VIDES, true));
-
-        return array_flip(array_unique($mots));
+        return array_values(array_unique(array_filter($mots, fn ($m) => mb_strlen($m) >= 4)));
     }
 
-    /** Indice de Jaccard : |A ∩ B| / |A ∪ B|, compris entre 0 et 1. */
     private function jaccard(array $a, array $b): float
     {
         if (! $a || ! $b) {
             return 0.0;
         }
 
-        $intersection = count(array_intersect_key($a, $b));
-        $union = count($a) + count($b) - $intersection;
+        $intersection = count(array_intersect($a, $b));
+        $union = count(array_unique(array_merge($a, $b)));
 
-        return $intersection / $union;
+        return round($intersection / $union * 100, 2);
     }
 }
