@@ -15,5 +15,9 @@
     },
     "optionalDependencies": {
         "@laravel/multiplex": "^0.4.1"
+    },
+    "dependencies": {
+        "@floating-ui/dom": "^1.8.0",
+        "alpinejs": "^3.17.5"
     }
 }
