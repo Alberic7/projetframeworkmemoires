@@ -18,6 +18,9 @@ Route::get('/', fn () => redirect()->route('catalogue.index'));
 Route::get('/catalogue', [CatalogueController::class, 'index'])->name('catalogue.index');
 Route::get('/catalogue/{memoire}', [CatalogueController::class, 'show'])->name('catalogue.show');
 
+// Démonstration du Layout Front
+Route::get('/home', fn () => view('pages.home'))->name('home');
+
 // Connecté (tous rôles)
 Route::middleware('auth')->group(function () {
     Route::view('/dashboard', 'dashboard')->name('dashboard');
