@@ -61,5 +61,10 @@ class User extends Authenticatable
         return $this->belongsToMany(Memoire::class, 'favoris')->withTimestamps();
     }
 
+    public function getNameAttribute(): string
+    {
+        return trim("{$this->prenom} {$this->nom}") ?: ($this->email ?? 'Utilisateur');
+    }
+
     // Logique métier
 }

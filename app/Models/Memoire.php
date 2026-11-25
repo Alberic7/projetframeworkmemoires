@@ -54,6 +54,11 @@ class Memoire extends Model
         return $this->belongsTo(AnneeAcademique::class, 'annee_academique_id');
     }
 
+    public function anneeAcademique(): BelongsTo
+    {
+        return $this->belongsTo(AnneeAcademique::class, 'annee_academique_id');
+    }
+
     public function validations(): HasMany
     {
         return $this->hasMany(Validation::class);
@@ -70,4 +75,20 @@ class Memoire extends Model
     }
 
     // Logique métier
+    public function scopeVisibles($query)
+    {
+        return $query->where('statut', \App\Enums\StatutMemoire::Valide->value)
+            ->where(function ($q) {
+                $q->whereNull('date_embargo')
+                  ->orWhere('date_embargo', '<=', now());
+            });
+    }
+
+    public function estPublie(): bool
+    {
+        $statut = $this->statut instanceof \BackedEnum ? $this->statut->value : (string) $this->statut;
+
+        return $statut === \App\Enums\StatutMemoire::Valide->value
+            && ($this->date_embargo === null || \Illuminate\Support\Carbon::parse($this->date_embargo)->lte(now()));
+    }
 }
