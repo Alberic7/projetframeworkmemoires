@@ -55,10 +55,11 @@ Route::middleware(['auth', 'role:chef_departement'])->get('/filiere/memoires', [
 
 // Administrateur
 Route::middleware(['auth', 'role:admin'])->prefix('admin')->name('admin.')->group(function () {
-    Route::resource('users', UserController::class)->only(['index', 'store', 'update', 'destroy']);
-    Route::resource('filieres', FiliereController::class)->only(['index', 'store', 'update', 'destroy']);
-    Route::resource('annees', AnneeAcademiqueController::class)->only(['index', 'store', 'update', 'destroy']);
-    Route::get('/statistiques', [StatistiqueController::class, 'index'])->name('statistiques');
+    Route::resource('users', Admin\UserController::class)->except(['create', 'show', 'edit']);
+    Route::resource('filieres', Admin\FiliereController::class)->except(['create', 'show', 'edit']);
+    Route::resource('annees', Admin\AnneeAcademiqueController::class)->except(['create', 'show', 'edit'])
+        ->parameters(['annees' => 'annee']);
+    Route::get('statistiques', Admin\StatistiqueController::class)->name('statistiques');
 });
 
 require __DIR__.'/auth.php';
