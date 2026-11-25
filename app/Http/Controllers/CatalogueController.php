@@ -2,58 +2,74 @@
 
 namespace App\Http\Controllers;
 
+use App\Enums\StatutMemoire;
 use App\Models\AnneeAcademique;
 use App\Models\Favori;
 use App\Models\Filiere;
 use App\Models\Memoire;
 use Illuminate\Http\Request;
+use Illuminate\View\View;
 
 class CatalogueController extends Controller
 {
-    public function index(Request $request)
+    public function index(Request $request): View
     {
-        $memoires = Memoire::visibles()
-            ->with(['etudiant', 'filiere', 'anneeAcademique'])
-            ->when($request->filled('q'), function ($query) use ($request) {
-                $q = trim($request->input('q'));
-                // FULLTEXT + repli LIKE sur le titre (mots courts ou ignorés par MySQL)
-                $query->where(function ($sub) use ($q) {
-                    $sub->whereRaw('MATCH(titre, resume, mots_cles) AGAINST (? IN NATURAL LANGUAGE MODE)', [$q])
-                        ->orWhere('titre', 'like', "%{$q}%");
-                });
+        $memoires = Memoire::query()
+            // Visible : validé et embargo passé ou vide.
+            ->where('statut', StatutMemoire::Valide->value)
+            ->where(function ($q) {
+                $q->whereNull('date_embargo')->orWhereDate('date_embargo', '<=', today());
             })
-            ->when($request->filled('auteur'), function ($query) use ($request) {
-                $auteur = trim($request->input('auteur'));
-                $query->whereHas('etudiant', function ($e) use ($auteur) {
-                    $e->where(function ($x) use ($auteur) {
-                        $x->where('nom', 'like', "%{$auteur}%")
-                          ->orWhere('prenom', 'like', "%{$auteur}%");
+            // Recherche plein texte (FULLTEXT titre, resume, mots_cles).
+            ->when($request->filled('q'), function ($q) use ($request) {
+                $termes = preg_split('/[^\p{L}\p{N}]+/u', (string) $request->input('q'), -1, PREG_SPLIT_NO_EMPTY);
+
+                if ($termes) {
+                    // Mode booléen : évite le seuil de 50 % du mode naturel sur peu de données.
+                    $recherche = implode(' ', array_map(fn ($t) => $t.'*', $termes));
+                    $q->whereRaw('MATCH(titre, resume, mots_cles) AGAINST (? IN BOOLEAN MODE)', [$recherche]);
+                }
+            })
+            ->when($request->filled('auteur'), function ($q) use ($request) {
+                $terme = '%'.$request->input('auteur').'%';
+
+                $q->whereHas('auteurs', function ($a) use ($terme) {
+                    $a->where(function ($w) use ($terme) {
+                        $w->where('nom', 'like', $terme)
+                          ->orWhere('prenom', 'like', $terme);
                     });
                 });
             })
-            ->when($request->filled('mot_cle'), fn ($query) => $query->where('mots_cles', 'like', '%'.trim($request->input('mot_cle')).'%'))
-            ->when($request->filled('filiere_id'), fn ($query) => $query->where('filiere_id', $request->integer('filiere_id')))
-            ->when($request->filled('annee_id'), fn ($query) => $query->where('annee_academique_id', $request->integer('annee_id')))
+            ->when($request->filled('mot_cle'), fn ($q) => $q->where('mots_cles', 'like', '%'.$request->input('mot_cle').'%'))
+            ->when($request->filled('filiere_id'), fn ($q) => $q->where('filiere_id', $request->input('filiere_id')))
+            ->when($request->filled('annee_id'), fn ($q) => $q->where('annee_academique_id', $request->input('annee_id')))
+            ->with(['auteurs', 'filiere', 'anneeAcademique'])
             ->latest()
-            ->paginate(10)
+            ->paginate(12)
             ->withQueryString();
 
-        $filieres = Filiere::orderBy('libelle')->get();
-        $annees = AnneeAcademique::orderByDesc('libelle')->get();
-
-        return view('catalogue.index', compact('memoires', 'filieres', 'annees'));
+        return view('catalogue.index', [
+            'memoires' => $memoires,
+            'filieres' => Filiere::orderBy('libelle')->get(),
+            'annees' => AnneeAcademique::orderByDesc('libelle')->get(),
+        ]);
     }
 
-    public function show(Memoire $memoire)
+    public function show(Request $request, Memoire $memoire): View
     {
-        // Un mémoire non validé ou sous embargo n'existe pas pour le public
-        abort_unless(Memoire::visibles()->whereKey($memoire->getKey())->exists(), 404);
+        $this->autoriserVoir($request, $memoire);
 
-        $memoire->load(['etudiant', 'filiere', 'anneeAcademique']);
+        $memoire->load(['auteurs', 'filiere', 'anneeAcademique']);
 
-        $estFavori = auth()->check()
-            && Favori::where('user_id', auth()->id())->where('memoire_id', $memoire->id)->exists();
+        $estFavori = $request->user()
+            ? Favori::where('user_id', $request->user()->id)->where('memoire_id', $memoire->id)->exists()
+            : false;
 
         return view('catalogue.show', compact('memoire', 'estFavori'));
+    }
+
+    private function autoriserVoir(Request $request, Memoire $memoire): void
+    {
+        \Illuminate\Support\Facades\Gate::forUser($request->user())->authorize('voir', $memoire);
     }
 }

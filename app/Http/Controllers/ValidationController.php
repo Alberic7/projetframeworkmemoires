@@ -10,57 +10,69 @@ use App\Models\Validation;
 use App\Notifications\MemoireRejeteNotification;
 use App\Notifications\MemoireValideNotification;
 use App\Services\PlagiatService;
+use Illuminate\Http\RedirectResponse;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\Notification;
+use Illuminate\View\View;
 
 class ValidationController extends Controller
 {
-    public function index()
+    /** Mémoires à vérifier (jamais ceux en attente du binôme). */
+    public function index(): View
     {
-        $memoires = Memoire::whereIn('statut', [StatutMemoire::Soumis->value, StatutMemoire::EnVerification->value])
-            ->with(['etudiant', 'filiere', 'anneeAcademique'])
+        $memoires = Memoire::query()
+            ->whereIn('statut', [
+                StatutMemoire::Soumis->value,
+                StatutMemoire::EnVerification->value,
+            ])
+            ->with(['auteurs', 'filiere', 'anneeAcademique'])
             ->oldest()
             ->get();
 
         return view('validation.index', compact('memoires'));
     }
 
-    public function show(Memoire $memoire, PlagiatService $plagiat)
+    public function show(Memoire $memoire, PlagiatService $plagiat): View
     {
         Gate::authorize('valider', $memoire);
 
-        // Transition soumis -> en_verification à l'ouverture du dossier
+        // soumis -> en_verification à l'ouverture de la fiche.
         Memoire::whereKey($memoire->id)
             ->where('statut', StatutMemoire::Soumis->value)
             ->update(['statut' => StatutMemoire::EnVerification->value]);
 
-        $memoire->refresh()->load(['etudiant', 'filiere', 'anneeAcademique']);
-        $similaires = $plagiat->analyser($memoire);
+        $memoire->refresh()->load(['auteurs', 'filiere', 'anneeAcademique']);
 
-        return view('validation.show', compact('memoire', 'similaires'));
+        return view('validation.show', [
+            'memoire' => $memoire,
+            'similaires' => $plagiat->similaires($memoire),
+        ]);
     }
 
-    public function valider(ValiderMemoireRequest $request, Memoire $memoire)
+    public function valider(ValiderMemoireRequest $request, Memoire $memoire): RedirectResponse
     {
         Gate::authorize('valider', $memoire);
 
-        $ok = DB::transaction(function () use ($request, $memoire) {
-            // Mise à jour conditionnelle : seule la transition en_verification -> valide est permise
-            $modifie = Memoire::whereKey($memoire->id)
-                ->where('statut', StatutMemoire::EnVerification->value)
+        $modifie = DB::transaction(function () use ($request, $memoire) {
+            $maj = Memoire::whereKey($memoire->id)
+                ->whereIn('statut', [
+                    StatutMemoire::Soumis->value,
+                    StatutMemoire::EnVerification->value,
+                ])
                 ->update([
                     'statut' => StatutMemoire::Valide->value,
                     'motif_rejet' => null,
                     'telechargement_autorise' => $request->boolean('telechargement_autorise'),
                     'acces_restreint' => $request->boolean('acces_restreint'),
-                    'date_embargo' => $request->validated('date_embargo'),
+                    'date_embargo' => $request->input('date_embargo'),
                 ]);
 
-            if (! $modifie) {
+            if ($maj === 0) {
                 return false;
             }
 
-            Validation::forceCreate([
+            Validation::create([
                 'memoire_id' => $memoire->id,
                 'responsable_id' => $request->user()->id,
                 'decision' => StatutMemoire::Valide->value,
@@ -70,36 +82,39 @@ class ValidationController extends Controller
             return true;
         });
 
-        if (! $ok) {
+        if (! $modifie) {
             return redirect()->route('validation.index')
-                ->with('error', "Ce mémoire n'est plus en cours de vérification.");
+                ->with('error', 'Ce mémoire a déjà été traité.');
         }
 
         $memoire->refresh();
-        $memoire->etudiant->notify(new MemoireValideNotification($memoire));
+        Notification::send($memoire->auteursConfirmes, new MemoireValideNotification($memoire));
 
         return redirect()->route('validation.index')->with('success', 'Mémoire validé.');
     }
 
-    public function rejeter(RejetMemoireRequest $request, Memoire $memoire)
+    public function rejeter(RejetMemoireRequest $request, Memoire $memoire): RedirectResponse
     {
         Gate::authorize('valider', $memoire);
 
-        $motif = $request->validated('motif');
+        $motif = $request->input('motif');
 
-        $ok = DB::transaction(function () use ($request, $memoire, $motif) {
-            $modifie = Memoire::whereKey($memoire->id)
-                ->where('statut', StatutMemoire::EnVerification->value)
+        $modifie = DB::transaction(function () use ($request, $memoire, $motif) {
+            $maj = Memoire::whereKey($memoire->id)
+                ->whereIn('statut', [
+                    StatutMemoire::Soumis->value,
+                    StatutMemoire::EnVerification->value,
+                ])
                 ->update([
                     'statut' => StatutMemoire::Rejete->value,
                     'motif_rejet' => $motif,
                 ]);
 
-            if (! $modifie) {
+            if ($maj === 0) {
                 return false;
             }
 
-            Validation::forceCreate([
+            Validation::create([
                 'memoire_id' => $memoire->id,
                 'responsable_id' => $request->user()->id,
                 'decision' => StatutMemoire::Rejete->value,
@@ -109,14 +124,14 @@ class ValidationController extends Controller
             return true;
         });
 
-        if (! $ok) {
+        if (! $modifie) {
             return redirect()->route('validation.index')
-                ->with('error', "Ce mémoire n'est plus en cours de vérification.");
+                ->with('error', 'Ce mémoire a déjà été traité.');
         }
 
         $memoire->refresh();
-        $memoire->etudiant->notify(new MemoireRejeteNotification($memoire));
+        Notification::send($memoire->auteursConfirmes, new MemoireRejeteNotification($memoire));
 
-        return redirect()->route('validation.index')->with('success', 'Mémoire rejeté. L\'étudiant a été notifié.');
+        return redirect()->route('validation.index')->with('success', 'Mémoire rejeté.');
     }
 }

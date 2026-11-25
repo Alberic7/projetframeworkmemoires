@@ -12,6 +12,7 @@ use App\Http\Controllers\MemoireController;
 use App\Http\Controllers\ProfileController;
 use App\Http\Controllers\ValidationController;
 use App\Http\Controllers\Admin;
+use App\Http\Controllers\BinomeController;
 use Illuminate\Support\Facades\Route;
 
 // Public
@@ -44,6 +45,10 @@ Route::middleware(['auth', 'role:etudiant'])->group(function () {
     Route::get('/memoires/create', [MemoireController::class, 'create'])->name('memoires.create');
     Route::post('/memoires', [MemoireController::class, 'store'])->name('memoires.store');
     Route::get('/mes-memoires', [MemoireController::class, 'mesMemoires'])->name('mes-memoires');
+    Route::get('binome/invitations', [BinomeController::class, 'index'])->name('binome.invitations');
+    Route::post('memoires/{memoire}/binome/accepter', [BinomeController::class, 'accepter'])->name('binome.accepter');
+    Route::post('memoires/{memoire}/binome/refuser', [BinomeController::class, 'refuser'])->name('binome.refuser');
+    Route::delete('memoires/{memoire}', [MemoireController::class, 'annuler'])->name('memoires.annuler');
 });
 
 // Responsable de la bibliothèque
